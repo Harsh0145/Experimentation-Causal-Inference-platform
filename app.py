@@ -6,7 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from analysis import analyze_categorical, analyze_experiment, beta_binary_posterior, difference_in_differences, sample_size, sequential_analysis, synthetic_control
+from analysis import analyze_categorical, analyze_experiment, beta_binary_posterior, difference_in_differences, propensity_score_match, sample_size, sequential_analysis, synthetic_control
 
 st.set_page_config(page_title="Fieldnotes · Experimentation Lab", page_icon="◉", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""<style>
@@ -51,6 +51,22 @@ def causal_demo() -> pd.DataFrame:
             if treated and t >= 14: level += 17 + (t-14)*1.6
             rows.append({"unit":unit,"week":t,"outcome":level})
     return pd.DataFrame(rows)
+
+@st.cache_data
+def observational_demo(seed: int = 44, n: int = 2400) -> pd.DataFrame:
+    rng=np.random.default_rng(seed)
+    prior_activity=rng.normal(0,1,n)
+    tenure_days=np.clip(rng.lognormal(3.6,.65,n),1,3650)
+    device=rng.choice(["Android","iOS","Web"],n,p=[.43,.37,.20])
+    android=(device=="Android").astype(float)
+    logit_treat=-.45+.85*prior_activity+.35*np.log1p(tenure_days/30)+.38*android
+    propensity=1/(1+np.exp(-logit_treat))
+    assigned=rng.binomial(1,propensity)
+    logit_outcome=-1.85+.72*prior_activity+.22*np.log1p(tenure_days/30)+.18*android+.34*assigned
+    conversion_probability=1/(1+np.exp(-logit_outcome))
+    converted=rng.binomial(1,conversion_probability)
+    return pd.DataFrame({"user_id":np.arange(200001,200001+n),"received_offer":np.where(assigned==1,"Treatment","Control"),
+                         "converted":converted,"prior_activity":prior_activity,"tenure_days":tenure_days,"device":device})
 
 st.sidebar.markdown("<div style='font:800 1.1rem Manrope;letter-spacing:-.04em;padding:10px 0'>◉ &nbsp;fieldnotes<span style='color:#a6c3a9'> / lab</span></div>", unsafe_allow_html=True)
 st.sidebar.markdown("A workspace for evidence-led product decisions.")
@@ -262,9 +278,58 @@ elif page == "Power planner":
 else:
     st.markdown("### Causal methods")
     st.caption("Methods for settings without random assignment. A credible estimate depends on design assumptions.")
-    method=st.radio("Method",["Difference-in-differences","Synthetic control"],horizontal=True)
-    cdf=causal_demo() if source=="Illustrative experiment" else df
-    if method=="Difference-in-differences":
+    method=st.radio("Method",["Propensity score matching","Difference-in-differences","Synthetic control"],horizontal=True)
+    cdf=observational_demo() if method=="Propensity score matching" and source=="Illustrative experiment" else (causal_demo() if source=="Illustrative experiment" else df)
+    if method=="Propensity score matching":
+        st.caption("Estimate an ATT by matching treated observations to similar controls on measured baseline covariates.")
+        all_columns=list(cdf.columns)
+        numeric_outcomes=[c for c in all_columns if pd.api.types.is_numeric_dtype(cdf[c]) and c not in {"user_id"}]
+        if not numeric_outcomes:
+            st.error("Upload a numeric outcome column for propensity-score matching."); st.stop()
+        with st.container(border=True):
+            p1,p2,p3=st.columns(3)
+            treatment_col=p1.selectbox("Treatment assignment",all_columns,index=all_columns.index("received_offer") if "received_offer" in all_columns else 0,key="psm_treatment")
+            outcome_col=p2.selectbox("Outcome",numeric_outcomes,index=numeric_outcomes.index("converted") if "converted" in numeric_outcomes else 0,key="psm_outcome")
+            caliper_sd=p3.number_input("Caliper (SD of logit score)",min_value=.05,max_value=1.0,value=.20,step=.05,help="Default 0.20 follows a simulation-based recommendation for matching on the logit propensity score.")
+            treatment_levels=sorted(cdf[treatment_col].dropna().astype(str).unique())
+            if len(treatment_levels)<2:
+                st.error("The treatment assignment column needs at least two groups."); st.stop()
+            q1,q2=st.columns(2)
+            control_value=q1.selectbox("Control group",treatment_levels,index=0,key="psm_control")
+            treatment_value=q2.selectbox("Treated group",[v for v in treatment_levels if v!=control_value],index=0,key="psm_treated")
+            covariate_options=[c for c in all_columns if c not in {treatment_col,outcome_col,"user_id"}]
+            default_covariates=[c for c in ["prior_activity","tenure_days","device"] if c in covariate_options]
+            covariates=st.multiselect("Pre-treatment covariates",covariate_options,default=default_covariates,key="psm_covariates",help="Include variables measured before treatment that may influence treatment assignment and the outcome. Do not include post-treatment variables.")
+        try:
+            result=propensity_score_match(cdf,treatment_col,outcome_col,covariates,treatment_value,control_value,caliper_sd)
+            max_before=float(result["balance"]["Before |SMD|"].max())
+            max_after=float(result["balance"]["After |SMD|"].max())
+            binary_outcome=set(cdf[outcome_col].dropna().unique()).issubset({0,1})
+            effect_format="+.1%" if binary_outcome else "+.3f"
+            p1,p2,p3,p4=st.columns(4)
+            metric("MATCHED PAIRS",f"{result['pairs']:,}",f"of {result['treated_total']:,} treated")
+            metric("TREATED RETAINED",f"{result['retained_treated']:.1%}","treated observations matched")
+            metric("ATT ESTIMATE",format(result["effect"],effect_format),f"95% CI {format(result['ci_low'],effect_format)} to {format(result['ci_high'],effect_format)}")
+            metric("MAX |SMD| AFTER",f"{max_after:.3f}",f"before matching: {max_before:.3f}")
+            st.write("")
+            st.markdown('<div class="insight"><b>Interpret with care.</b> Matching balances only the measured covariates you selected. A causal interpretation still requires no important unmeasured confounding, adequate overlap, and correctly measured pre-treatment covariates. The interval treats matched pairs as the analysis sample and does not account for propensity-model estimation uncertainty.</div>',unsafe_allow_html=True)
+            scored=result["scored"].copy()
+            scored["Arm"]=scored["_treatment"].map({0:str(control_value),1:str(treatment_value)})
+            overlap=px.histogram(scored,x="_propensity",color="Arm",nbins=30,barmode="overlay",histnorm="probability density",opacity=.55,labels={"_propensity":"Estimated propensity score","Arm":"Assignment"},color_discrete_map={str(control_value):"#b9c6bb",str(treatment_value):"#315e49"})
+            overlap.update_layout(height=320,margin=dict(l=10,r=10,t=18,b=10),xaxis_title="Estimated probability of treatment",yaxis_title="Density",plot_bgcolor="white",paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(overlap,use_container_width=True)
+            balance_chart=result["balance"].melt(id_vars="Covariate",value_vars=["Before |SMD|","After |SMD|"],var_name="Sample",value_name="Absolute standardized mean difference")
+            fig=px.bar(balance_chart,x="Absolute standardized mean difference",y="Covariate",color="Sample",barmode="group",orientation="h",color_discrete_map={"Before |SMD|":"#b9c6bb","After |SMD|":"#315e49"})
+            fig.add_vline(x=.1,line_dash="dash",line_color="#d28a3b",annotation_text="0.10 reference")
+            fig.update_layout(height=max(300,34*len(result["balance"])),margin=dict(l=10,r=12,t=18,b=10),plot_bgcolor="white",paper_bgcolor="rgba(0,0,0,0)")
+            st.markdown("#### Covariate balance")
+            st.caption("Absolute standardized mean differences (|SMD|); values below 0.10 are a common diagnostic reference, not proof that confounding is removed.")
+            st.plotly_chart(fig,use_container_width=True)
+            with st.expander("Matched pair details"):
+                st.dataframe(result["matched_pairs"].style.format(precision=4),hide_index=True,use_container_width=True)
+        except (ValueError,TypeError) as e:
+            st.warning(str(e))
+    elif method=="Difference-in-differences":
         c1,c2,c3=st.columns(3)
         unit=c1.selectbox("Group / unit",cdf.columns,index=cdf.columns.get_loc("unit") if "unit" in cdf else 0)
         time=c2.selectbox("Period",cdf.columns,index=cdf.columns.get_loc("week") if "week" in cdf else min(1,len(cdf.columns)-1))

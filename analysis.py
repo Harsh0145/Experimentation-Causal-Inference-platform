@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+from sklearn.linear_model import LogisticRegression
 from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.power import TTestIndPower
 from statsmodels.stats.proportion import proportions_ztest
@@ -81,6 +83,123 @@ def analyze_categorical(df: pd.DataFrame, group: str, outcome: str, control: str
             "statistic": float(chi2), "degrees_freedom": int(dof), "p_value": float(p_value),
             "significant": bool(p_value < alpha), "cramers_v": cramer_v,
             "expected_min": float(np.min(expected)), "contingency": table}
+
+
+def _covariate_balance(data: pd.DataFrame, treated_mask: np.ndarray,
+                       covariates: list[str]) -> pd.DataFrame:
+    rows = []
+    for name in covariates:
+        values = data[name]
+        if pd.api.types.is_numeric_dtype(values):
+            features = pd.DataFrame({name: pd.to_numeric(values)}, index=data.index)
+        else:
+            features = pd.get_dummies(values.astype(str), prefix=name, dtype=float)
+            features.index = data.index
+        for feature in features.columns:
+            x = features[feature].to_numpy(dtype=float)
+            x_t, x_c = x[treated_mask], x[~treated_mask]
+            pooled_sd = math.sqrt((np.var(x_t, ddof=1) + np.var(x_c, ddof=1)) / 2) if len(x_t)>1 and len(x_c)>1 else 0
+            difference = float(np.mean(x_t) - np.mean(x_c))
+            smd = difference / pooled_sd if pooled_sd > 1e-12 else (0.0 if abs(difference) < 1e-12 else float("inf"))
+            rows.append({"Covariate": feature, "|SMD|": abs(smd)})
+    return pd.DataFrame(rows)
+
+
+def propensity_score_match(df: pd.DataFrame, treatment: str, outcome: str,
+                           covariates: list[str], treatment_value: str,
+                           control_value: str, caliper_sd: float = .2) -> dict[str, Any]:
+    """1:1 greedy nearest-neighbor matching without replacement on logit propensity.
+
+    The logistic propensity model is fit to measured, complete-case baseline
+    covariates. The default caliper is 0.2 SD of the logit propensity score.
+    """
+    if not covariates:
+        raise ValueError("Select at least one pre-treatment covariate.")
+    if treatment in covariates or outcome in covariates:
+        raise ValueError("Treatment and outcome columns cannot be matching covariates.")
+    if caliper_sd <= 0:
+        raise ValueError("Caliper width must be positive.")
+    use_cols = list(dict.fromkeys([treatment, outcome, *covariates]))
+    data = df[use_cols].dropna().copy().reset_index(drop=True)
+    data[treatment] = data[treatment].astype(str)
+    data = data[data[treatment].isin([str(control_value), str(treatment_value)])].reset_index(drop=True)
+    if data[treatment].nunique() != 2:
+        raise ValueError("Both selected treatment and control groups must have complete observations.")
+    try:
+        data[outcome] = pd.to_numeric(data[outcome], errors="raise").astype(float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("The outcome must be numeric (binary outcomes should use 0 and 1).") from exc
+    if len(data) < 20:
+        raise ValueError("At least 20 complete observations are recommended for propensity-score matching.")
+
+    treated_mask = (data[treatment] == str(treatment_value)).to_numpy()
+    y = treated_mask.astype(int)
+    if y.sum() < 2 or (1-y).sum() < 2:
+        raise ValueError("Need at least two observations in each selected arm.")
+    x = pd.get_dummies(data[covariates], drop_first=False, dummy_na=False, dtype=float)
+    if x.shape[1] == 0 or not np.isfinite(x.to_numpy(dtype=float)).all():
+        raise ValueError("The selected covariates could not be encoded as finite numeric features.")
+    model = LogisticRegression(max_iter=2000, solver="lbfgs", random_state=0)
+    try:
+        model.fit(x, y)
+    except (ValueError, np.linalg.LinAlgError) as exc:
+        raise ValueError(f"Could not fit the propensity model: {exc}") from exc
+    propensity = np.clip(model.predict_proba(x)[:, 1], 1e-6, 1-1e-6)
+    logit_ps = np.log(propensity / (1-propensity))
+    caliper = float(caliper_sd * np.std(logit_ps, ddof=1))
+    if not np.isfinite(caliper) or caliper <= 0:
+        raise ValueError("Propensity scores have no usable variation; try different covariates.")
+
+    t_idx = np.flatnonzero(treated_mask)
+    c_idx = np.flatnonzero(~treated_mask)
+    c_order = np.argsort(logit_ps[c_idx], kind="stable")
+    available_scores = list(logit_ps[c_idx][c_order])
+    available_indices = list(c_idx[c_order])
+    matched_t: list[int] = []
+    matched_c: list[int] = []
+    distances: list[float] = []
+    for ti in t_idx[np.argsort(logit_ps[t_idx], kind="stable")]:
+        position = bisect_left(available_scores, logit_ps[ti])
+        candidates = [j for j in (position-1, position) if 0 <= j < len(available_scores)]
+        if not candidates:
+            continue
+        nearest = min(candidates, key=lambda j: abs(available_scores[j]-logit_ps[ti]))
+        distance = float(abs(available_scores[nearest]-logit_ps[ti]))
+        if distance <= caliper:
+            matched_t.append(int(ti))
+            matched_c.append(int(available_indices.pop(nearest)))
+            available_scores.pop(nearest)
+            distances.append(distance)
+    if len(matched_t) < 2:
+        raise ValueError("Fewer than two pairs met the caliper. Review overlap, covariates, or caliper width.")
+
+    scored = data.copy()
+    scored["_treatment"] = y
+    scored["_propensity"] = propensity
+    scored["_logit_propensity"] = logit_ps
+    matched_data = scored.iloc[matched_t + matched_c].copy()
+    matched_mask = matched_data["_treatment"].to_numpy(dtype=bool)
+    before_balance = _covariate_balance(scored, treated_mask, covariates)
+    after_balance = _covariate_balance(matched_data, matched_mask, covariates)
+    balance = before_balance.rename(columns={"|SMD|": "Before |SMD|"}).merge(
+        after_balance.rename(columns={"|SMD|": "After |SMD|"}), on="Covariate", how="outer")
+    balance["After |SMD|"] = balance["After |SMD|"].fillna(0.0)
+    t_outcome = data.iloc[matched_t][outcome].to_numpy(dtype=float)
+    c_outcome = data.iloc[matched_c][outcome].to_numpy(dtype=float)
+    pair_effects = t_outcome - c_outcome
+    effect = float(np.mean(pair_effects))
+    standard_error = float(np.std(pair_effects, ddof=1) / math.sqrt(len(pair_effects)))
+    critical = float(stats.t.ppf(.975, len(pair_effects)-1))
+    ci = (effect-critical*standard_error, effect+critical*standard_error)
+    return {"pairs": len(matched_t), "treated_total": int(treated_mask.sum()),
+            "control_total": int((~treated_mask).sum()), "retained_treated": len(matched_t)/int(treated_mask.sum()),
+            "effect": effect, "ci_low": float(ci[0]), "ci_high": float(ci[1]),
+            "caliper": caliper, "mean_distance": float(np.mean(distances)),
+            "balance": balance, "scored": scored,
+            "matched_pairs": pd.DataFrame({"Pair": np.arange(1, len(matched_t)+1),
+                                            "Treated outcome": t_outcome,
+                                            "Matched control outcome": c_outcome,
+                                            "Pair effect": pair_effects})}
 
 
 def sequential_analysis(df: pd.DataFrame, group: str, outcome: str, kind: str,
