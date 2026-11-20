@@ -6,7 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from analysis import analyze_experiment, beta_binary_posterior, difference_in_differences, sample_size, synthetic_control
+from analysis import analyze_experiment, beta_binary_posterior, difference_in_differences, sample_size, sequential_analysis, synthetic_control
 
 st.set_page_config(page_title="Fieldnotes · Experimentation Lab", page_icon="◉", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""<style>
@@ -52,7 +52,7 @@ st.sidebar.markdown("<div style='font:800 1.1rem Manrope;letter-spacing:-.04em;p
 st.sidebar.markdown("A workspace for evidence-led product decisions.")
 st.sidebar.markdown("---")
 st.sidebar.markdown("**WORKSPACE**")
-page=st.sidebar.radio("Navigation",["Overview","Experiment analysis","Power planner","Causal methods"],label_visibility="collapsed")
+page=st.sidebar.radio("Navigation",["Overview","Experiment analysis","Sequential testing","Power planner","Causal methods"],label_visibility="collapsed")
 st.sidebar.markdown("---")
 st.sidebar.markdown("**DATA SOURCE**")
 source=st.sidebar.radio("Dataset",["Illustrative experiment","Upload CSV"],label_visibility="collapsed")
@@ -141,6 +141,60 @@ elif page == "Experiment analysis":
                 adj=multipletests([x[1] for x in rows],alpha=alpha,method="bonferroni")[1]
                 bh=multipletests([x[1] for x in rows],alpha=alpha,method="fdr_bh")[1]
                 st.dataframe(pd.DataFrame({"Outcome":[x[0] for x in rows],"Raw p-value":[x[1] for x in rows],"Bonferroni p":[*adj],"BH adjusted p":[*bh]}).style.format(precision=4),hide_index=True,use_container_width=True)
+
+elif page == "Sequential testing":
+    st.markdown("### Sequential testing")
+    st.caption("Review accumulating experiment results at pre-planned checkpoints, with a family-wise error bound across looks.")
+    columns=list(df.columns)
+    if len(columns)<2:
+        st.error("Upload a CSV with an assignment column and numeric outcome column."); st.stop()
+    with st.container(border=True):
+        s1,s2,s3,s4=st.columns(4)
+        group=s1.selectbox("Assignment column",columns,index=columns.index("variant") if "variant" in columns else 0,key="seq_group")
+        outcomes=[c for c in columns if c!=group]
+        outcome=s2.selectbox("Outcome column",outcomes,index=outcomes.index("converted") if "converted" in outcomes else 0,key="seq_outcome")
+        kind=s3.selectbox("Outcome type",["Binary conversion","Continuous"],key="seq_kind")
+        alpha=s4.selectbox("Family-wise alpha",[.01,.05,.10],index=1,format_func=lambda x:f"{x:.0%}",key="seq_alpha")
+        s5,s6,s7=st.columns(3)
+        order_choices=["CSV row order"]+[c for c in columns if c not in (group,outcome)]
+        likely_order=next((c for c in order_choices if c.lower() in {"timestamp","event_time","created_at","date","time","user_id","id"}),"CSV row order")
+        order_by=s5.selectbox("Arrival order",order_choices,index=order_choices.index(likely_order),help="Choose the timestamp, sequence, or ID that represents when observations arrived. CSV row order is used if there is no such column.")
+        looks=s6.number_input("Planned looks",min_value=2,max_value=20,value=5,step=1)
+    arms=sorted(df[group].dropna().astype(str).unique())
+    if len(arms)<2:
+        st.error("The assignment column needs at least two groups."); st.stop()
+    a1,a2=st.columns(2)
+    control=a1.selectbox("Control arm",arms,index=0,key="seq_control")
+    treatment=a2.selectbox("Treatment arm",[x for x in arms if x!=control],index=0,key="seq_treatment")
+    if order_by != "CSV row order":
+        ordered=df.sort_values(order_by,kind="stable",na_position="last")
+    else:
+        ordered=df.copy()
+    try:
+        results=sequential_analysis(ordered,group,outcome,kind,control,treatment,int(looks),alpha)
+        threshold=alpha/int(looks)
+        crossed=results[results["Decision"]=="Crossed boundary"]
+        latest=results.iloc[-1]
+        m1,m2,m3=st.columns(3)
+        metric("LOOKS PLANNED",str(int(looks)),"fixed before analysis")
+        metric("PER-LOOK THRESHOLD",f"{threshold:.3%}",f"overall alpha ≤ {alpha:.0%}")
+        if not crossed.empty:
+            first=int(crossed.iloc[0]["Look"])
+            metric("SEQUENTIAL DECISION","Boundary crossed",f"first crossed at look {first}")
+        else:
+            metric("SEQUENTIAL DECISION","No boundary crossed",f"latest adjusted p = {latest['Adjusted p-value']:.4g}" if pd.notna(latest["Adjusted p-value"]) else "Not enough observations yet")
+        st.write("")
+        st.markdown('<div class="insight"><b>How to use this safely:</b> pre-specify the maximum number of looks and examine results only at these checkpoints. This page divides alpha by the number of looks (Bonferroni), which controls the chance of any false positive at or below the chosen family-wise alpha, but is more conservative than a purpose-built group-sequential design. Do not change outcomes or inspect unscheduled checkpoints after seeing results.</div>',unsafe_allow_html=True)
+        st.write("")
+        table=results.copy()
+        st.dataframe(table.style.format({"Raw p-value":"{:.4g}","Adjusted p-value":"{:.4g}","Effect":"{:+.4g}"},na_rep="—"),hide_index=True,use_container_width=True)
+        fig=go.Figure()
+        fig.add_trace(go.Scatter(x=results["Look"],y=results["Raw p-value"],mode="lines+markers",name="Raw p-value",line_color="#315e49"))
+        fig.add_hline(y=threshold,line_dash="dash",line_color="#d28a3b",annotation_text=f"Per-look threshold {threshold:.3%}")
+        fig.update_layout(height=330,margin=dict(l=10,r=10,t=22,b=10),xaxis_title="Planned look",yaxis_title="Raw p-value",yaxis_range=[0,1],plot_bgcolor="white",paper_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig,use_container_width=True)
+    except (ValueError,TypeError) as exc:
+        st.error(str(exc))
 
 elif page == "Power planner":
     st.markdown("### Power planner")

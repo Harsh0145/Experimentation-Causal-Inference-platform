@@ -60,6 +60,48 @@ def analyze_experiment(df: pd.DataFrame, group: str, outcome: str, kind: str, co
             "significant": bool(p < alpha), "test": test, "standardized_effect": float(effect)}
 
 
+def sequential_analysis(df: pd.DataFrame, group: str, outcome: str, kind: str,
+                        control: str, treatment: str, looks: int = 5,
+                        alpha: float = .05) -> pd.DataFrame:
+    """Evaluate a fixed schedule of cumulative looks with Bonferroni FWER control.
+
+    Rows must already be sorted in arrival order. Each nominal test is evaluated
+    at alpha / looks, so the probability of one or more false rejections across
+    the pre-specified looks is at most alpha, under the validity assumptions of
+    the underlying per-look tests.
+    """
+    if looks < 2:
+        raise ValueError("Plan at least two looks.")
+    if not 0 < alpha < 1:
+        raise ValueError("Alpha must be between zero and one.")
+    data = df[[group, outcome]].dropna().reset_index(drop=True)
+    if len(data) < 4:
+        raise ValueError("Need at least four complete rows for sequential analysis.")
+    rows: list[dict[str, Any]] = []
+    for look in range(1, looks + 1):
+        stop = max(1, int(np.floor(len(data) * look / looks)))
+        snapshot = data.iloc[:stop]
+        selected = snapshot[snapshot[group].astype(str).isin([control, treatment])]
+        n_control = int((selected[group].astype(str) == control).sum())
+        n_treatment = int((selected[group].astype(str) == treatment).sum())
+        row: dict[str, Any] = {"Look": look, "Rows observed": stop,
+                               "Control n": n_control, "Treatment n": n_treatment,
+                               "Raw p-value": np.nan, "Adjusted p-value": np.nan,
+                               "Effect": np.nan, "Decision": "Insufficient data"}
+        if n_control >= 2 and n_treatment >= 2:
+            try:
+                result = analyze_experiment(selected, group, outcome, kind, control, treatment, alpha)
+                p_adjusted = min(1.0, result["p_value"] * looks)
+                row.update({"Raw p-value": result["p_value"],
+                            "Adjusted p-value": p_adjusted,
+                            "Effect": result["effect"],
+                            "Decision": "Crossed boundary" if p_adjusted <= alpha else "Continue"})
+            except ValueError:
+                row["Decision"] = "Check outcome values"
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def beta_binary_posterior(a: np.ndarray, b: np.ndarray, draws: int = 100_000) -> dict[str, float]:
     """Conjugate Beta(1,1) conversion model (exact sampling, no MCMC required)."""
     ra = np.random.default_rng(201)

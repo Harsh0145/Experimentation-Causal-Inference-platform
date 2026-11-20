@@ -5,6 +5,7 @@ A Streamlit workspace for designing A/B tests, analyzing outcomes, and exploring
 ## What is included
 
 - Reproducible simulated product experiment data, plus CSV upload.
+- A sequential testing page that evaluates a pre-planned number of cumulative looks with Bonferroni family-wise error control.
 - Power and sample-size planning for two independent means.
 - Welch's t-test for continuous outcomes and a two-proportion z-test for binary outcomes, with confidence intervals and effect sizes.
 - Bayesian conversion analysis using a Beta-Binomial model and an explicit uniform prior.
@@ -55,7 +56,8 @@ flowchart LR
 ## Method notes and limitations
 
 - Sample-size planning uses the independent-samples t-test approximation for a specified standardized mean difference, alpha, power, and allocation ratio. It does not currently plan binary outcomes, clustered designs, attrition, or sequential designs.
-- The experiment page computes a fixed-sample analysis. Repeated peeking can inflate false positives; this demo does not implement alpha-spending or sequential testing.
+- The experiment page computes a fixed-sample analysis. Use the Sequential testing page for repeated looks; it applies a conservative Bonferroni boundary at preplanned checkpoints.
+- Sequential testing uses a Bonferroni threshold of `alpha / planned looks` at fixed, equally spaced checkpoints in the ordered rows. The bound requires a fixed look count chosen in advance and valid per-look p-values. It is conservative and should not be treated as a substitute for a prespecified group-sequential design when early stopping is consequential.
 - The Bayesian model is a Beta(1,1) prior for each arm's conversion rate. It reports posterior probability and credible interval, not a frequentist p-value.
 - Difference-in-differences compares average outcomes before and after a selected intervention cutoff. Its key parallel-trends assumption cannot be established by the estimate.
 - Synthetic control estimates nonnegative donor weights summing to one using pre-period outcome fit. It does not include uncertainty intervals or placebo inference.
