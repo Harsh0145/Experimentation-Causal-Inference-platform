@@ -8,6 +8,7 @@ A Streamlit workspace for designing A/B tests, analyzing outcomes, and exploring
 - A sequential testing page that evaluates a pre-planned number of cumulative looks with Bonferroni family-wise error control.
 - Power and sample-size planning for two independent means.
 - Welch's t-test for continuous outcomes and a two-proportion z-test for binary outcomes, with confidence intervals and effect sizes.
+- Chi-square tests of independence for categorical outcomes, with category shares, Cramér's V, and a sparse-cell warning.
 - Bayesian conversion analysis using a Beta-Binomial model and an explicit uniform prior.
 - Bonferroni and Benjamini-Hochberg multiple-testing correction.
 - Two-period difference-in-differences and a constrained synthetic-control demonstration.
@@ -37,7 +38,7 @@ streamlit run app.py
 
 ## Data format
 
-For experiment analysis, upload a CSV containing an assignment column with at least two groups and a numeric outcome column. Binary conversion should use `0` and `1`. Rows with missing assignment/outcome are excluded for the selected analysis. Uploads stay in the app process and are not persisted by this project.
+For experiment analysis, upload a CSV containing an assignment column with at least two groups and an outcome column. Binary conversion should use `0` and `1`; continuous outcomes should be numeric; categorical outcomes can use labels or numeric codes. Rows with missing assignment/outcome are excluded for the selected analysis. Uploads stay in the app process and are not persisted by this project.
 
 For causal methods, use a tidy table with one row per unit-period observation, a group/unit column, a time/period column, and a numeric outcome. Difference-in-differences uses the selected period as the first post-treatment period and averages across pre/post rows. The synthetic-control view requires multiple donor units and at least one pre- and post-intervention time point.
 
@@ -58,6 +59,7 @@ flowchart LR
 - Sample-size planning uses the independent-samples t-test approximation for a specified standardized mean difference, alpha, power, and allocation ratio. It does not currently plan binary outcomes, clustered designs, attrition, or sequential designs.
 - The experiment page computes a fixed-sample analysis. Use the Sequential testing page for repeated looks; it applies a conservative Bonferroni boundary at preplanned checkpoints.
 - Sequential testing uses a Bonferroni threshold of `alpha / planned looks` at fixed, equally spaced checkpoints in the ordered rows. The bound requires a fixed look count chosen in advance and valid per-look p-values. It is conservative and should not be treated as a substitute for a prespecified group-sequential design when early stopping is consequential.
+- Chi-square analysis tests whether the selected category distribution differs by arm. Sparse expected counts can make the asymptotic p-value unreliable; the app flags a minimum expected count below five.
 - The Bayesian model is a Beta(1,1) prior for each arm's conversion rate. It reports posterior probability and credible interval, not a frequentist p-value.
 - Difference-in-differences compares average outcomes before and after a selected intervention cutoff. Its key parallel-trends assumption cannot be established by the estimate.
 - Synthetic control estimates nonnegative donor weights summing to one using pre-period outcome fit. It does not include uncertainty intervals or placebo inference.
@@ -65,9 +67,9 @@ flowchart LR
 
 ## Suggested next steps
 
-1. Add sequential testing with a validated alpha-spending implementation and simulations.
+1. Add propensity-score matching, covariate adjustment, and uncertainty estimates for causal methods.
 2. Add tests and benchmark scenarios before expanding method coverage.
-3. Add covariate adjustment, propensity-score methods, uncertainty estimates for causal methods, and dataset-specific validation.
+3. Validate method behavior on reference datasets and document dataset-specific assumptions.
 4. If the app needs multi-user persistence, access control, or an external client, separate the analysis layer behind FastAPI and add a React client. Keep secrets and uploaded data handling explicit.
 
 ## Project structure

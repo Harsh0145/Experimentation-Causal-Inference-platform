@@ -6,7 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from analysis import analyze_experiment, beta_binary_posterior, difference_in_differences, sample_size, sequential_analysis, synthetic_control
+from analysis import analyze_categorical, analyze_experiment, beta_binary_posterior, difference_in_differences, sample_size, sequential_analysis, synthetic_control
 
 st.set_page_config(page_title="Fieldnotes · Experimentation Lab", page_icon="◉", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""<style>
@@ -33,9 +33,13 @@ def demo_data(seed: int = 32, n: int = 1600) -> pd.DataFrame:
     variant = rng.choice(["Control", "Treatment"], n)
     probability = np.where(variant == "Treatment", .124, .105)
     converted = rng.binomial(1, probability)
+    selected_plan = np.array([rng.choice(["Basic", "Plus", "Premium"],
+                                p=[.58, .30, .12] if arm == "Control" else [.44, .38, .18])
+                              for arm in variant])
     return pd.DataFrame({"user_id": np.arange(100001, 100001+n), "variant": variant,
                          "converted": converted, "revenue": np.where(converted, rng.gamma(2.1, 21, n), 0),
-                         "session_minutes": rng.gamma(2.5, 4.8, n) + (variant == "Treatment")*.35})
+                         "session_minutes": rng.gamma(2.5, 4.8, n) + (variant == "Treatment")*.35,
+                         "selected_plan": selected_plan})
 
 @st.cache_data
 def causal_demo() -> pd.DataFrame:
@@ -99,7 +103,7 @@ elif page == "Experiment analysis":
         a1,a2,a3,a4=st.columns(4)
         group=a1.selectbox("Assignment column",cols,index=cols.index("variant") if "variant" in cols else 0)
         outcome=a2.selectbox("Outcome column",[c for c in cols if c!=group],index=([c for c in cols if c!=group].index("converted") if "converted" in cols else 0))
-        kind=a3.selectbox("Outcome type",["Binary conversion","Continuous"])
+        kind=a3.selectbox("Outcome type",["Binary conversion","Continuous","Categorical (chi-square)"],help="Use chi-square when the outcome consists of named categories, such as plan type or support reason.")
         alpha=a4.selectbox("Significance level",[.01,.05,.10],index=1,format_func=lambda x:f"{x:.0%}")
     arms=sorted(df[group].dropna().astype(str).unique())
     if len(arms)<2: st.error("The assignment column needs at least two groups."); st.stop()
@@ -107,34 +111,66 @@ elif page == "Experiment analysis":
     with control: control_arm=st.selectbox("Control arm",arms,index=0)
     with treatment: treatment_arm=st.selectbox("Treatment arm",[x for x in arms if x!=control_arm],index=0)
     try:
-        result=analyze_experiment(df,group,outcome,kind,control_arm,treatment_arm,alpha)
-        value_format=".1%" if kind=="Binary conversion" else ".3f"
-        lift=result["effect"]
-        c1,c2,c3,c4=st.columns(4)
-        metric("CONTROL MEAN",format(result["mean_a"],value_format),f"n = {result['n_a']:,}")
-        metric("TREATMENT MEAN",format(result["mean_b"],value_format),f"n = {result['n_b']:,}")
-        metric("ABSOLUTE EFFECT",format(lift,"+.2%" if kind=="Binary conversion" else "+.3f"),f"95% CI {result['ci_low']:+.3%} to {result['ci_high']:+.3%}" if kind=="Binary conversion" else f"95% CI {result['ci_low']:+.3f} to {result['ci_high']:+.3f}")
-        metric("P-VALUE",f"{result['p_value']:.4f}",result["test"])
-        st.write("")
-        if kind == "Binary conversion":
-            post=beta_binary_posterior(df.loc[df[group].astype(str)==control_arm,outcome].dropna().to_numpy(),df.loc[df[group].astype(str)==treatment_arm,outcome].dropna().to_numpy())
-            st.markdown(f'<div class="insight"><b>Bayesian read:</b> given a uniform Beta(1,1) prior and this data, there is a <b>{post["prob_b_better"]:.1%}</b> probability that treatment conversion is higher. The posterior mean lift is {post["expected_lift"]:+.2%} (95% credible interval {post["ci_low"]:+.2%} to {post["ci_high"]:+.2%}).</div>',unsafe_allow_html=True)
+        if kind == "Categorical (chi-square)":
+            result=analyze_categorical(df,group,outcome,control_arm,treatment_arm,alpha)
+            c1,c2,c3,c4=st.columns(4)
+            metric("CONTROL n",f"{result['n_control']:,}",control_arm)
+            metric("TREATMENT n",f"{result['n_treatment']:,}",treatment_arm)
+            metric("CRAMÉR’S V",f"{result['cramers_v']:.3f}",f"χ²({result['degrees_freedom']}) = {result['statistic']:.2f}")
+            metric("P-VALUE",f"{result['p_value']:.4f}","Chi-square test of independence")
+            st.write("")
+            if result["significant"]:
+                conclusion="The distribution of categories differs between these arms at the selected threshold."
+            else:
+                conclusion="There is not enough evidence at the selected threshold to say the category distributions differ."
+            st.markdown(f'<div class="insight"><b>{conclusion}</b> Chi-square tests whether the distributions are associated; it does not identify which category caused the difference or establish causation on its own.</div>',unsafe_allow_html=True)
+            if result["expected_min"] < 5:
+                st.warning(f"At least one expected cell count is below 5 (minimum {result['expected_min']:.2f}). The chi-square approximation may be unreliable; combine rare categories when substantively appropriate or use an exact/Monte Carlo method.")
+            table=result["contingency"]
+            shares=table.div(table.sum(axis=1),axis=0).rename_axis(index=group,columns=outcome).reset_index().melt(id_vars=group,var_name=outcome,value_name="Share")
+            fig=px.bar(shares,x=group,y="Share",color=outcome,barmode="stack",text_auto=".0%",color_discrete_sequence=px.colors.qualitative.Safe)
+            fig.update_layout(height=340,margin=dict(l=12,r=12,t=20,b=12),yaxis_title="Share within arm",xaxis_title="",yaxis_tickformat=".0%",plot_bgcolor="white",paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig,use_container_width=True)
+            with st.expander("Observed category counts"):
+                st.dataframe(table,use_container_width=True)
         else:
-            label="Evidence against no difference" if result["significant"] else "Inconclusive at the selected threshold"
-            st.markdown(f'<div class="insight"><b>{label}.</b> The estimated change is {lift:+.4g}; the confidence interval is {result["ci_low"]:+.4g} to {result["ci_high"]:+.4g}. A p-value does not measure the probability that the hypothesis is true.</div>',unsafe_allow_html=True)
-        st.write("")
-        fig=go.Figure()
-        fig.add_trace(go.Bar(x=[control_arm,treatment_arm],y=[result["mean_a"],result["mean_b"]],marker_color=["#b9c6bb","#315e49"],text=[f"{result['mean_a']:.3f}",f"{result['mean_b']:.3f}"],textposition="outside"))
-        fig.update_layout(height=320,margin=dict(l=12,r=12,t=20,b=12),yaxis_title=outcome,xaxis_title="",plot_bgcolor="white",paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig,use_container_width=True)
+            result=analyze_experiment(df,group,outcome,kind,control_arm,treatment_arm,alpha)
+            value_format=".1%" if kind=="Binary conversion" else ".3f"
+            lift=result["effect"]
+            c1,c2,c3,c4=st.columns(4)
+            metric("CONTROL MEAN",format(result["mean_a"],value_format),f"n = {result['n_a']:,}")
+            metric("TREATMENT MEAN",format(result["mean_b"],value_format),f"n = {result['n_b']:,}")
+            metric("ABSOLUTE EFFECT",format(lift,"+.2%" if kind=="Binary conversion" else "+.3f"),f"95% CI {result['ci_low']:+.3%} to {result['ci_high']:+.3%}" if kind=="Binary conversion" else f"95% CI {result['ci_low']:+.3f} to {result['ci_high']:+.3f}")
+            metric("P-VALUE",f"{result['p_value']:.4f}",result["test"])
+            st.write("")
+            if kind == "Binary conversion":
+                post=beta_binary_posterior(df.loc[df[group].astype(str)==control_arm,outcome].dropna().to_numpy(),df.loc[df[group].astype(str)==treatment_arm,outcome].dropna().to_numpy())
+                st.markdown(f'<div class="insight"><b>Bayesian read:</b> given a uniform Beta(1,1) prior and this data, there is a <b>{post["prob_b_better"]:.1%}</b> probability that treatment conversion is higher. The posterior mean lift is {post["expected_lift"]:+.2%} (95% credible interval {post["ci_low"]:+.2%} to {post["ci_high"]:+.2%}).</div>',unsafe_allow_html=True)
+            else:
+                label="Evidence against no difference" if result["significant"] else "Inconclusive at the selected threshold"
+                st.markdown(f'<div class="insight"><b>{label}.</b> The estimated change is {lift:+.4g}; the confidence interval is {result["ci_low"]:+.4g} to {result["ci_high"]:+.4g}. A p-value does not measure the probability that the hypothesis is true.</div>',unsafe_allow_html=True)
+            st.write("")
+            fig=go.Figure()
+            fig.add_trace(go.Bar(x=[control_arm,treatment_arm],y=[result["mean_a"],result["mean_b"]],marker_color=["#b9c6bb","#315e49"],text=[f"{result['mean_a']:.3f}",f"{result['mean_b']:.3f}"],textposition="outside"))
+            fig.update_layout(height=320,margin=dict(l=12,r=12,t=20,b=12),yaxis_title=outcome,xaxis_title="",plot_bgcolor="white",paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig,use_container_width=True)
     except (ValueError,TypeError) as exc: st.error(str(exc))
     with st.expander("Multiple testing: correct a family of outcomes"):
         candidates=[c for c in cols if c!=group]
         selected=st.multiselect("Outcomes to test together",candidates,default=[outcome])
         if selected:
+            categorical_defaults=[outcome] if kind=="Categorical (chi-square)" and outcome in selected else []
+            categorical_family=st.multiselect("Treat these outcomes as categories",selected,default=categorical_defaults,help="Useful for numeric coded categories such as 1 = basic, 2 = plus, 3 = premium.")
             rows=[]
             for col in selected:
-                try: rows.append((col,analyze_experiment(df,group,col,"Binary conversion" if set(df[col].dropna().unique()).issubset({0,1}) else "Continuous",control_arm,treatment_arm,alpha)["p_value"]))
+                try:
+                    non_missing=df[col].dropna()
+                    if col in categorical_family or (not pd.api.types.is_numeric_dtype(non_missing) and not set(non_missing.unique()).issubset({0,1})):
+                        p_value=analyze_categorical(df,group,col,control_arm,treatment_arm,alpha)["p_value"]
+                    else:
+                        outcome_kind="Binary conversion" if set(non_missing.unique()).issubset({0,1}) else "Continuous"
+                        p_value=analyze_experiment(df,group,col,outcome_kind,control_arm,treatment_arm,alpha)["p_value"]
+                    rows.append((col,p_value))
                 except (ValueError,TypeError): pass
             if rows:
                 from statsmodels.stats.multitest import multipletests

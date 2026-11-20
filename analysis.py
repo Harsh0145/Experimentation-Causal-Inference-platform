@@ -60,6 +60,29 @@ def analyze_experiment(df: pd.DataFrame, group: str, outcome: str, kind: str, co
             "significant": bool(p < alpha), "test": test, "standardized_effect": float(effect)}
 
 
+def analyze_categorical(df: pd.DataFrame, group: str, outcome: str, control: str,
+                        treatment: str, alpha: float = .05) -> dict[str, Any]:
+    """Compare a categorical outcome distribution across two experiment arms."""
+    data = df[[group, outcome]].dropna().copy()
+    data[group] = data[group].astype(str)
+    data = data[data[group].isin([control, treatment])]
+    data[outcome] = data[outcome].astype(str)
+    table = pd.crosstab(data[group], data[outcome]).reindex(index=[control, treatment], fill_value=0)
+    table = table.loc[:, table.sum(axis=0) > 0]
+    if table.shape[1] < 2:
+        raise ValueError("The selected outcome needs at least two observed categories.")
+    if (table.sum(axis=1) == 0).any():
+        raise ValueError("Both selected arms need at least one non-missing outcome.")
+    chi2, p_value, dof, expected = stats.chi2_contingency(table.to_numpy(), correction=False)
+    n = int(table.to_numpy().sum())
+    denominator = n * min(table.shape[0]-1, table.shape[1]-1)
+    cramer_v = math.sqrt(float(chi2) / denominator) if denominator > 0 else 0.0
+    return {"n_control": int(table.loc[control].sum()), "n_treatment": int(table.loc[treatment].sum()),
+            "statistic": float(chi2), "degrees_freedom": int(dof), "p_value": float(p_value),
+            "significant": bool(p_value < alpha), "cramers_v": cramer_v,
+            "expected_min": float(np.min(expected)), "contingency": table}
+
+
 def sequential_analysis(df: pd.DataFrame, group: str, outcome: str, kind: str,
                         control: str, treatment: str, looks: int = 5,
                         alpha: float = .05) -> pd.DataFrame:
