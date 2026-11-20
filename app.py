@@ -103,7 +103,15 @@ elif page == "Experiment analysis":
         a1,a2,a3,a4=st.columns(4)
         group=a1.selectbox("Assignment column",cols,index=cols.index("variant") if "variant" in cols else 0)
         outcome=a2.selectbox("Outcome column",[c for c in cols if c!=group],index=([c for c in cols if c!=group].index("converted") if "converted" in cols else 0))
-        kind=a3.selectbox("Outcome type",["Binary conversion","Continuous","Categorical (chi-square)"],help="Use chi-square when the outcome consists of named categories, such as plan type or support reason.")
+        selected_values=df[outcome].dropna()
+        if not pd.api.types.is_numeric_dtype(selected_values):
+            kind_default=2
+        elif set(selected_values.unique()).issubset({0,1}):
+            kind_default=0
+        else:
+            kind_default=1
+        kind_key=f"analysis_kind_{group}_{outcome}_{df[outcome].dtype}"
+        kind=a3.selectbox("Outcome type",["Binary conversion","Continuous","Categorical (chi-square)"],index=kind_default,key=kind_key,help="Choose chi-square for named or numeric-coded categories, such as plan type or support reason.")
         alpha=a4.selectbox("Significance level",[.01,.05,.10],index=1,format_func=lambda x:f"{x:.0%}")
     arms=sorted(df[group].dropna().astype(str).unique())
     if len(arms)<2: st.error("The assignment column needs at least two groups."); st.stop()
