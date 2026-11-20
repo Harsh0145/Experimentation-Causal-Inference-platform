@@ -73,15 +73,17 @@ def beta_binary_posterior(a: np.ndarray, b: np.ndarray, draws: int = 100_000) ->
 def difference_in_differences(df: pd.DataFrame, outcome: str, group: str, period: str,
                               treated: str, post: str) -> dict[str, float]:
     means = df.groupby([group, period])[outcome].mean().unstack()
-    if treated not in means.index or post not in means.columns or len(means.columns) != 2:
-        raise ValueError("Choose a two-period dataset with treated/control groups and pre/post periods.")
+    if treated not in means.index or post not in means.columns or len(means.columns) < 2:
+        raise ValueError("Choose a dataset with treated/control groups and observations before and after treatment.")
     control = next((x for x in means.index if x != treated), None)
-    pre = next((x for x in means.columns if x != post), None)
-    if control is None or pre is None:
+    pre = [x for x in means.columns if x != post]
+    if control is None or not pre:
         raise ValueError("Could not identify comparison group and pre-period.")
-    effect = (means.loc[treated, post]-means.loc[treated, pre])-(means.loc[control, post]-means.loc[control, pre])
-    return {"effect": float(effect), "treated_pre": float(means.loc[treated, pre]),
-            "treated_post": float(means.loc[treated, post]), "control_pre": float(means.loc[control, pre]),
+    treated_pre = float(means.loc[treated, pre].mean())
+    control_pre = float(means.loc[control, pre].mean())
+    effect = (means.loc[treated, post]-treated_pre)-(means.loc[control, post]-control_pre)
+    return {"effect": float(effect), "treated_pre": treated_pre,
+            "treated_post": float(means.loc[treated, post]), "control_pre": control_pre,
             "control_post": float(means.loc[control, post])}
 
 

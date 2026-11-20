@@ -172,7 +172,7 @@ else:
         time=c2.selectbox("Period",cdf.columns,index=cdf.columns.get_loc("week") if "week" in cdf else min(1,len(cdf.columns)-1))
         outcome=c3.selectbox("Outcome",cdf.columns,index=cdf.columns.get_loc("outcome") if "outcome" in cdf else min(2,len(cdf.columns)-1))
         groups=sorted(cdf[unit].dropna().unique().tolist(),key=str); periods=sorted(cdf[time].dropna().unique().tolist(),key=str)
-        if len(groups)>=2 and len(periods)==2:
+        if len(groups)>=2 and len(periods)>=2:
             treat=st.selectbox("Treated group",groups); post=st.selectbox("Post period",periods,index=1)
             try:
                 did=difference_in_differences(cdf,outcome,unit,time,treat,post)
@@ -188,7 +188,10 @@ else:
         unit=c1.selectbox("Unit",cdf.columns,index=cdf.columns.get_loc("unit") if "unit" in cdf else 0,key="sc_unit")
         time=c2.selectbox("Time",cdf.columns,index=cdf.columns.get_loc("week") if "week" in cdf else min(1,len(cdf.columns)-1),key="sc_time")
         outcome=c3.selectbox("Outcome",cdf.columns,index=cdf.columns.get_loc("outcome") if "outcome" in cdf else min(2,len(cdf.columns)-1),key="sc_outcome")
-        units=sorted(cdf[unit].dropna().unique().tolist(),key=str); treated=st.selectbox("Treated unit",units); intervention=st.selectbox("Intervention begins",sorted(cdf[time].unique().tolist()))
+        units=sorted(cdf[unit].dropna().unique().tolist(),key=str); treated=st.selectbox("Treated unit",units)
+        time_values=sorted(cdf[time].dropna().unique().tolist())
+        default_intervention=min(max(int(len(time_values)*.7),1),len(time_values)-1) if len(time_values)>1 else 0
+        intervention=st.selectbox("Intervention begins",time_values,index=default_intervention)
         try:
             sc=synthetic_control(cdf,unit,time,outcome,treated,intervention)
             fig=go.Figure();fig.add_scatter(x=sc.time,y=sc["Observed treated"],name="Treated",line_color="#315e49");fig.add_scatter(x=sc.time,y=sc["Synthetic control"],name="Synthetic",line=dict(color="#e09b45",dash="dash"));fig.add_vline(x=intervention,line_dash="dot",line_color="#829087")
