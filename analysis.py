@@ -76,15 +76,19 @@ def difference_in_differences(df: pd.DataFrame, outcome: str, group: str, period
     if treated not in means.index or post not in means.columns or len(means.columns) < 2:
         raise ValueError("Choose a dataset with treated/control groups and observations before and after treatment.")
     control = next((x for x in means.index if x != treated), None)
-    pre = [x for x in means.columns if x != post]
-    if control is None or not pre:
+    post_index = list(means.columns).index(post)
+    pre = list(means.columns[:post_index])
+    post_periods = list(means.columns[post_index:])
+    if control is None or not pre or not post_periods:
         raise ValueError("Could not identify comparison group and pre-period.")
     treated_pre = float(means.loc[treated, pre].mean())
     control_pre = float(means.loc[control, pre].mean())
-    effect = (means.loc[treated, post]-treated_pre)-(means.loc[control, post]-control_pre)
+    treated_post = float(means.loc[treated, post_periods].mean())
+    control_post = float(means.loc[control, post_periods].mean())
+    effect = (treated_post-treated_pre)-(control_post-control_pre)
     return {"effect": float(effect), "treated_pre": treated_pre,
-            "treated_post": float(means.loc[treated, post]), "control_pre": control_pre,
-            "control_post": float(means.loc[control, post])}
+            "treated_post": treated_post, "control_pre": control_pre,
+            "control_post": control_post}
 
 
 def synthetic_control(df: pd.DataFrame, unit: str, time: str, outcome: str, treated: str, intervention: Any) -> pd.DataFrame:

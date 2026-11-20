@@ -171,16 +171,17 @@ else:
         unit=c1.selectbox("Group / unit",cdf.columns,index=cdf.columns.get_loc("unit") if "unit" in cdf else 0)
         time=c2.selectbox("Period",cdf.columns,index=cdf.columns.get_loc("week") if "week" in cdf else min(1,len(cdf.columns)-1))
         outcome=c3.selectbox("Outcome",cdf.columns,index=cdf.columns.get_loc("outcome") if "outcome" in cdf else min(2,len(cdf.columns)-1))
-        groups=sorted(cdf[unit].dropna().unique().tolist(),key=str); periods=sorted(cdf[time].dropna().unique().tolist(),key=str)
+        groups=sorted(cdf[unit].dropna().unique().tolist(),key=str); periods=sorted(cdf[time].dropna().unique().tolist())
         if len(groups)>=2 and len(periods)>=2:
-            treat=st.selectbox("Treated group",groups); post=st.selectbox("Post period",periods,index=1)
+            cutoff_index=min(max(int(len(periods)*.7),1),len(periods)-1)
+            treat=st.selectbox("Treated group",groups); post=st.selectbox("Treatment begins",periods,index=cutoff_index)
             try:
                 did=difference_in_differences(cdf,outcome,unit,time,treat,post)
                 metric("DIFFERENCE-IN-DIFFERENCES",f"{did['effect']:+.3f}","change in outcome units")
                 pvt=cdf.groupby([time,unit])[outcome].mean().reset_index()
                 fig=px.line(pvt,x=time,y=outcome,color=unit,markers=True)
                 fig.update_layout(height=350,margin=dict(l=8,r=8,t=10,b=8),plot_bgcolor="white",paper_bgcolor="rgba(0,0,0,0)");st.plotly_chart(fig,use_container_width=True)
-                st.markdown('<div class="insight"><b>Assumption to examine:</b> absent treatment, treated and comparison groups would have followed parallel outcome trends. The two-period estimate does not test that assumption; inspect pre-treatment trends and potential spillovers.</div>',unsafe_allow_html=True)
+                st.markdown('<div class="insight"><b>Assumption to examine:</b> absent treatment, treated and comparison groups would have followed parallel outcome trends. This before/after contrast does not test that assumption; inspect pre-treatment trends and potential spillovers.</div>',unsafe_allow_html=True)
             except ValueError as e: st.warning(str(e))
         else: st.info("Difference-in-differences needs at least two groups and exactly two periods in this starter view.")
     else:

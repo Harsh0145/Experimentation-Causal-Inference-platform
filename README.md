@@ -38,7 +38,7 @@ streamlit run app.py
 
 For experiment analysis, upload a CSV containing an assignment column with at least two groups and a numeric outcome column. Binary conversion should use `0` and `1`. Rows with missing assignment/outcome are excluded for the selected analysis. Uploads stay in the app process and are not persisted by this project.
 
-For causal methods, use a tidy table with one row per unit-period observation, a group/unit column, a time/period column, and a numeric outcome. The difference-in-differences starter expects exactly two periods. The synthetic-control view requires multiple donor units and at least one pre- and post-intervention time point.
+For causal methods, use a tidy table with one row per unit-period observation, a group/unit column, a time/period column, and a numeric outcome. Difference-in-differences uses the selected period as the first post-treatment period and averages across pre/post rows. The synthetic-control view requires multiple donor units and at least one pre- and post-intervention time point.
 
 ## Architecture
 
@@ -57,7 +57,7 @@ flowchart LR
 - Sample-size planning uses the independent-samples t-test approximation for a specified standardized mean difference, alpha, power, and allocation ratio. It does not currently plan binary outcomes, clustered designs, attrition, or sequential designs.
 - The experiment page computes a fixed-sample analysis. Repeated peeking can inflate false positives; this demo does not implement alpha-spending or sequential testing.
 - The Bayesian model is a Beta(1,1) prior for each arm's conversion rate. It reports posterior probability and credible interval, not a frequentist p-value.
-- Difference-in-differences reports the raw two-period interaction contrast. Its key parallel-trends assumption cannot be established by the estimate.
+- Difference-in-differences compares average outcomes before and after a selected intervention cutoff. Its key parallel-trends assumption cannot be established by the estimate.
 - Synthetic control estimates nonnegative donor weights summing to one using pre-period outcome fit. It does not include uncertainty intervals or placebo inference.
 - Multiple-testing adjustments apply to the outcomes selected in the UI; choose the family before examining results where possible.
 
