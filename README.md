@@ -43,6 +43,12 @@ For experiment analysis, upload a CSV containing an assignment column with at le
 
 For propensity-score matching, provide a binary treatment assignment, numeric outcome, and measured pre-treatment covariates. The app drops rows missing any selected field. For difference-in-differences and synthetic control, use a tidy table with one row per unit-period observation, a group/unit column, a time/period column, and a numeric outcome. Difference-in-differences uses the selected period as the first post-treatment period and averages across pre/post rows. The synthetic-control view requires multiple donor units and at least one pre- and post-intervention time point.
 
+### Try the CSV upload demo
+
+Download [`sample_data/demo_ab_upload.csv`](sample_data/demo_ab_upload.csv), choose **Upload CSV** in the app sidebar, then open **Experiment analysis**. Use `variant` for assignment and `converted` for the binary outcome.
+
+Expected result: Control has 50/500 conversions (10%), Treatment has 100/500 (20%), and the estimated difference is +10 percentage points. The two-proportion z-test should give *z* ≈ 4.428 and *p* ≈ 0.0000095, with a 95% confidence interval of about +5.62 to +14.38 percentage points. At the default 5% threshold, the app should report a statistically significant difference. The data is synthetic and is meant to check the upload and analysis flow.
+
 ## Architecture
 
 ```mermaid
